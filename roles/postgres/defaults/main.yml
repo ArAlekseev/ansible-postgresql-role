@@ -1,0 +1,44 @@
+---
+postgres__data_dir: /data/postgres/data
+
+postgres__config:
+  listen_addresses: "'localhost'"
+  port: 5432
+  max_connections: 100
+  shared_buffers: 128MB
+
+postgres__hba_rules:
+  - type: local
+    database: all
+    user: postgres
+    address: ""
+    method: peer
+
+  - type: local
+    database: all
+    user: all
+    address: ""
+    method: peer
+
+  - type: host
+    database: all
+    user: all
+    address: 127.0.0.1/32
+    method: scram-sha-256
+
+  - type: host
+    database: all
+    user: all
+    address: ::1/128
+    method: scram-sha-256
+
+postgres__databases:
+  - app_db
+  - analytics_db
+
+postgres__users:
+  - name: app_user
+    password: "{{ __app_user_password }}"
+  - name: analytics_user
+    password: "{{ __analytics_user_password }}"
+# defaults file for roles/postgres

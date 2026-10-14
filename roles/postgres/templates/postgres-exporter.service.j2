@@ -1,0 +1,15 @@
+[Unit]
+Description=PostgreSQL Prometheus exporter
+After=postgres.service
+Wants=postgres.service
+
+[Service]
+Type=simple
+User=postgres
+EnvironmentFile=/etc/postgres-exporter.env
+ExecStart=/usr/local/bin/postgres_exporter --web.listen-address=127.0.0.1:9187
+Restart=on-failure
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

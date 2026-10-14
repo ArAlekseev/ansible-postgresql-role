@@ -1,0 +1,12 @@
+[Unit]
+Description=PostgreSQL custom server
+After=network.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/lib/postgresql/{{ __pg_version }}/bin/postgres -D {{ postgres__data_dir }}
+
+[Install]
+WantedBy=multi-user.target

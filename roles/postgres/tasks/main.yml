@@ -1,0 +1,147 @@
+
+---
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name: postgresql
+    state: present
+    update_cache: true
+
+- name: Find installed PostgreSQL versions
+  ansible.builtin.find:
+    paths: /usr/lib/postgresql
+    file_type: directory
+    recurse: false
+  register: __pg_version_dirs
+
+- name: Set PostgreSQL version
+  ansible.builtin.set_fact:
+    __pg_version: "{{ __pg_version_dirs.files | map(attribute='path') | map('basename') | sort | last }}"
+  when: __pg_version_dirs.matched > 0
+
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+
+- name: Stop default PostgreSQL cluster
+  ansible.builtin.systemd_service:
+    name: "postgresql@{{ __pg_version }}-main.service"
+    state: stopped
+    enabled: false
+  when: "'postgresql@' ~ __pg_version ~ '-main.service' in ansible_facts.services"
+
+- name: Create /data directory
+  ansible.builtin.file:
+    path: /data
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create PostgreSQL parent directory
+  ansible.builtin.file:
+    path: "{{ postgres__data_dir | dirname }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0700'
+- name: Create PostgreSQL data directory
+  ansible.builtin.file:
+    path: "{{ postgres__data_dir }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0700'
+
+- name: Init database cluster
+  ansible.builtin.command:
+    cmd: "/usr/lib/postgresql/{{ __pg_version }}/bin/pg_ctl initdb -D {{ postgres__data_dir }}"
+    creates: "{{ postgres__data_dir }}/PG_VERSION"
+  become: true
+  become_user: postgres
+
+- name: Configure PostgreSQL
+  ansible.builtin.lineinfile:
+    path: "{{ postgres__data_dir }}/postgresql.conf"
+    regexp: "^#?\\s*{{ item.key }}\\s*="
+    line: "{{ item.key }} = {{ item.value }}"
+    state: present
+  loop: "{{ postgres__config | dict2items }}"
+
+- name: Configure PostgreSQL client authentication
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: "{{ postgres__data_dir }}/pg_hba.conf"
+    owner: postgres
+    group: postgres
+    mode: '0600'
+
+- name: Install PostgreSQL systemd unit
+  ansible.builtin.template:
+    src: postgres.service.j2
+    dest: /etc/systemd/system/postgres.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+- name: Apply systemd changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Start PostgreSQL service
+  ansible.builtin.systemd_service:
+    name: postgres.service
+    state: started
+    enabled: true
+
+- name: Check PostgreSQL connection
+  ansible.builtin.command:
+    cmd: psql -c "SELECT 1"
+  become_user: postgres
+  register: __pg_check
+  changed_when: false
+
+- name: Get existing PostgreSQL databases
+  ansible.builtin.command:
+    cmd: psql -d postgres -At -c "SELECT datname FROM pg_database"
+  become_user: postgres
+  register: __pg_existing_databases
+  changed_when: false
+
+- name: Create PostgreSQL databases
+  ansible.builtin.command:
+    cmd: 'psql -d postgres -c "CREATE DATABASE {{ item }}"'
+  become_user: postgres
+  loop: "{{ postgres__databases }}"
+  when: item not in __pg_existing_databases.stdout_lines
+
+- name: Get existing PostgreSQL users
+  ansible.builtin.command:
+    cmd: psql -d postgres -At -c "SELECT rolname FROM pg_roles"
+  become_user: postgres
+  register: __pg_existing_users
+  changed_when: false
+
+- name: Create PostgreSQL users
+  ansible.builtin.command:
+    cmd: "createuser --login {{ item.name }}"
+  become_user: postgres
+  loop: "{{ postgres__users }}"
+  when: item.name not in __pg_existing_users.stdout_lines
+
+- name: Set PostgreSQL user passwords
+  ansible.builtin.command:
+    cmd: psql -d postgres -v ON_ERROR_STOP=1
+    stdin: >-
+      ALTER ROLE "{{ item.name }}"
+      PASSWORD '{{ item.password | replace("'", "''") }}';
+  become_user: postgres
+  loop: "{{ postgres__users }}"
+  when: item.name not in __pg_existing_users.stdout_lines
+  no_log: true
+
+- name: Install PostgreSQL exporter
+  ansible.builtin.import_tasks: exporter.yml
+
+
+
+
+# tasks file for roles/postgres

@@ -1,0 +1,99 @@
+---
+- name: Download exporter on controller
+  delegate_to: localhost
+  become: false
+  run_once: true
+  block:
+    - name: Create download dir
+      ansible.builtin.file:
+        path: /tmp/postgres-exporter
+        mode: "777"
+        state: directory
+
+    - name: Download exporter
+      ansible.builtin.unarchive:
+        src: >-
+          https://github.com/prometheus-community/postgres_exporter/releases/download/v0.17.0/postgres_exporter-0.17.0.linux-amd64.tar.gz
+        dest: /tmp/postgres-exporter
+        remote_src: true
+        creates: /tmp/postgres-exporter/postgres_exporter-0.17.0.linux-amd64
+
+    - name: Find exporter executable
+      ansible.builtin.find:
+        paths: /tmp/postgres-exporter
+        file_type: file
+        patterns: "postgres_exporter"
+        recurse: true
+      register: __result
+
+    - name: Register path to executable
+      ansible.builtin.set_fact:
+        __executable_file_local: "{{ __result.files[0].path }}"
+
+- name: Propagate fact
+  ansible.builtin.set_fact:
+    __executable_file: "{{ hostvars['vm1'].__executable_file_local }}"
+
+- name: Copy exporter executable
+  ansible.builtin.copy:
+    src: "{{ __executable_file }}"
+    dest: /usr/local/bin/postgres_exporter
+    mode: "755"
+
+- name: Copy postgres-exporter systemd service
+  ansible.builtin.template:
+    src: postgres-exporter.service.j2
+    dest: /etc/systemd/system/postgres-exporter.service
+    mode: "644"
+    owner: root
+    group: root
+  notify:
+    - Daemon reload
+    - Restart PostgreSQL exporter
+
+- name: Copy postgres-exporter environment file
+  ansible.builtin.template:
+    src: postgres-exporter.env.j2
+    dest: /etc/postgres-exporter.env
+    owner: root
+    group: postgres
+    mode: "0640"
+  no_log: true
+  notify:
+    - Restart PostgreSQL exporter
+
+- name: Check PostgreSQL exporter user
+  ansible.builtin.command:
+    cmd: psql -d postgres -At -c "SELECT rolname FROM pg_roles WHERE rolname = 'postgres_exporter'"
+  become_user: postgres
+  register: __exporter_user
+  changed_when: false
+
+- name: Create PostgreSQL exporter user
+  ansible.builtin.command:
+    cmd: psql -d postgres -c "CREATE ROLE postgres_exporter LOGIN"
+  become_user: postgres
+  when: __exporter_user.stdout == ""
+
+- name: Grant monitoring privileges
+  ansible.builtin.command:
+    cmd: psql -d postgres -c "GRANT pg_monitor TO postgres_exporter"
+  become_user: postgres
+  changed_when: false
+
+- name: Set PostgreSQL exporter password
+  ansible.builtin.command:
+    cmd: psql -d postgres -v ON_ERROR_STOP=1
+    stdin: >-
+      ALTER ROLE postgres_exporter
+      PASSWORD '{{ __postgres_exporter_password | replace("'", "''") }}';
+  become_user: postgres
+  when: __exporter_user.stdout == ""
+  no_log: true
+
+- name: Enable and start postgres-exporter
+  ansible.builtin.systemd_service:
+    name: postgres-exporter
+    enabled: true
+    state: started
+    daemon_reload: true
